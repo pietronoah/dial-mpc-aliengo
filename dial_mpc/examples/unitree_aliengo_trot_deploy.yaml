@@ -28,7 +28,7 @@ ramp_up_time: 1.0
 gait: trot
 
 # Sim
-robot_name: "unitree_aliengo"
+robot_name: "aliengo"
 scene_name: "scene.xml"
 sim_leg_control: torque
 plot: false

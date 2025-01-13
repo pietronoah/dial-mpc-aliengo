@@ -34,6 +34,20 @@ os.environ["XLA_FLAGS"] = xla_flags
 
 
 def rollout_us(step_env, state, us):
+    """
+    Perform a rollout using a sequence of control inputs.
+
+    Args:
+        step_env (function): A function that takes the current state and a control input,
+                             and returns the next state.
+        state (object): The initial state of the environment.
+        us (iterable): A sequence of control inputs to apply.
+
+    Returns:
+        tuple: A tuple containing:
+            - rews (iterable): A sequence of rewards obtained at each step.
+            - pipeline_states (iterable): A sequence of pipeline states obtained at each step.
+    """
     def step(state, u):
         state = step_env(state, u)
         return state, (state.reward, state.pipeline_state)
@@ -44,6 +58,20 @@ def rollout_us(step_env, state, us):
 
 @jax.jit
 def softmax_update(weights, Y0s, sigma, mu_0t):
+    """
+    Perform a softmax update using Einstein summation.
+
+    Parameters:
+    weights (jnp.ndarray): A 1D array of weights.
+    Y0s (jnp.ndarray): A 3D array of values to be weighted.
+    sigma (any): An additional parameter that is returned unchanged.
+    mu_0t (any): An additional parameter that is not used in the function.
+
+    Returns:
+    tuple: A tuple containing:
+        - mu_0tm1 (jnp.ndarray): The result of the Einstein summation, a 2D array.
+        - sigma: The unchanged input parameter sigma.
+    """
     mu_0tm1 = jnp.einsum("n,nij->ij", weights, Y0s)
     return mu_0tm1, sigma
 
@@ -97,6 +125,7 @@ class MBDPI:
         nodes = spline(self.step_nodes)
         return nodes
 
+    # Function performing the reverse diffusion
     @functools.partial(jax.jit, static_argnums=(0,))
     def reverse_once(self, state, rng, Ybar_i, noise_scale):
         # sample from q_i
@@ -104,7 +133,10 @@ class MBDPI:
         eps_Y = jax.random.normal(
             Y0s_rng, (self.args.Nsample, self.args.Hnode + 1, self.nu)
         )
+        # jax.debug.print("Y0s_rng: {x}", x=Y0s_rng)
+        # Noise scale is a 5-element vector used to scale the noise (divided by 2 at each iteration)
         Y0s = eps_Y * noise_scale[None, :, None] + Ybar_i
+        jax.debug.print("Y0s: {x}", x=Y0s[0,0,:])
         # we can't change the first control
         Y0s = Y0s.at[:, 0].set(Ybar_i[0, :])
         # append Y0s with Ybar_i to also evaluate Ybar_i
@@ -223,10 +255,12 @@ def main():
     rng, rng_reset = jax.random.split(rng)
     state_init = reset_env(rng_reset)
 
+    # Solution for control input after N diffusion steps
     YN = jnp.zeros([dial_config.Hnode + 1, mbdpi.nu])
 
     rng_exp, rng = jax.random.split(rng)
     # Y0 = mbdpi.reverse(state_init, YN, rng_exp)
+    # First step diffusion solution
     Y0 = YN
 
     Nstep = dial_config.n_steps
@@ -239,7 +273,7 @@ def main():
     with tqdm(range(Nstep), desc="Rollout") as pbar:
         for t in pbar:
             # forward single step
-            state = step_env(state, Y0[0])
+            state = step_env(state, Y0[0]) # Physical step in the simulator
             rollout.append(state.pipeline_state)
             rews.append(state.reward)
             us.append(Y0[0])
@@ -247,12 +281,13 @@ def main():
             # update Y0
             Y0 = mbdpi.shift(Y0)
 
-            n_diffuse = dial_config.Ndiffuse
+            n_diffuse = dial_config.Ndiffuse # Number of diffusion steps
             if t == 0:
-                n_diffuse = dial_config.Ndiffuse_init
+                n_diffuse = dial_config.Ndiffuse_init # Higher numer of diffusion steps in the first iteration
                 print("Performing JIT on DIAL-MPC")
 
             t0 = time.time()
+            # Here it calculates the updated diffusion factors 
             traj_diffuse_factors = (
                 mbdpi.sigma_control * dial_config.traj_diffuse_factor ** (jnp.arange(n_diffuse))[:, None]
             )
